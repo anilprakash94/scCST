@@ -1,0 +1,21 @@
+name: sccst
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.9
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - scanpy
+  - anndata
+  - joblib
+  - matplotlib
+  - seaborn
+  - jupyter
+  - ipykernel
+  - pytest
+  - pip
+  - pip:
+      - gseapy
+      - -e .

@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+title: scCST
+message: "Please cite the scCST manuscript or preprint when available."
+authors:
+  - family-names: Prakash
+    given-names: Anil
+version: 0.1.0
+date-released: 2026-07-01

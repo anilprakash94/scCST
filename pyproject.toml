@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sccst"
+version = "0.1.0"
+description = "single-cell Cell State Transition: local replicate-aware case-control scRNA-seq analysis"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Anil Prakash"}
+]
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "scanpy",
+    "anndata",
+    "joblib",
+    "matplotlib",
+    "seaborn",
+]
+
+[project.optional-dependencies]
+downstream = ["gseapy", "leidenalg"]
+dev = ["pytest", "jupyter", "ipykernel"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
