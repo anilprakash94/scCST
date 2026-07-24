@@ -24,7 +24,7 @@ scCST operates on an `AnnData` object with:
 - a **latent embedding** in `adata.obsm[latent_key]` (e.g. `X_pca`, or a batch-integrated
   `X_pca_harmony`)
 - three `adata.obs` columns: **condition**, **biological batch/replicate** (donor/patient),
-  and **cell type**
+  and **cell type/leiden cluster**
 
 ```python
 import scanpy as sc
@@ -148,7 +148,7 @@ python scripts/run_downstream.py --input sccst_result.h5ad --output sccst_annota
 - **Case order matters:** `conditions[0]` is the case/disease state; the gene score is
   case − control.
 - **`batch_col`** must be the biological replicate (donor/patient/sample) that scCST matches
-  across conditions — not a purely technical label.
+  across conditions.
 - **No latent embedding / raw counts?** Compute `sc.pp.normalize_total` + `sc.pp.log1p`, then
   `sc.pp.pca` (and, if there are batch effects, a batch-integrated embedding such as Harmony
   into `X_pca_harmony`), and point `latent_key` at it.
