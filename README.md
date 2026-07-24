@@ -3,16 +3,15 @@
 Local, replicate-aware case–control differential analysis for scRNA-seq. For every cell
 (or a set of representative *anchor* cells) and gene, scCST scores how strongly expression
 shifts between a condition (e.g. disease) and control **within matched biological-replicate
-neighbourhoods**, and summarises each cell with a *divergence score*. It is robust to batch
-effects and to cell-type composition differences between conditions.
+neighbourhoods**, and summarises each cell with a *divergence score*.
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/<your-org>/scCST.git         # from GitHub
+pip install git+https://github.com/anilprakash94/scCST.git         # from GitHub
 pip install ./scCST                                             # from a local clone
 # optional extras for the downstream helpers (leiden clustering + GO enrichment):
-pip install "sccst[downstream] @ git+https://github.com/<your-org>/scCST.git"
+pip install "sccst[downstream] @ git+https://github.com/anilprakash94/scCST.git"
 ```
 
 Requires Python ≥ 3.9 (numpy, scipy, scikit-learn, scanpy, anndata, joblib, matplotlib, seaborn).
