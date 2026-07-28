@@ -46,7 +46,8 @@ cell_importances, gene_names, run_info = process_cell_type(
     adata,
     conditions=("stim", "ctrl"),   # (case, control) — CASE FIRST
     condition_col="label",         # obs column with the two states
-    batch_col="batch",             # biological replicate / donor
+    batch_col="batch",             # biological replicate / donor (neighborhoods + matching)
+    sample_col="sample",           # optional: same source in both conditions -> paired matching (None = unpaired)
     cell_type_col="cell_type",     # cell-type labels
     latent_key="X_pca",            # obsm embedding key
     n_neighborhoods=50,
@@ -147,8 +148,11 @@ python scripts/run_downstream.py --input sccst_result.h5ad --output sccst_annota
   ~35 min this way). Results are then per-anchor rather than per-cell.
 - **Case order matters:** `conditions[0]` is the case/disease state; the gene score is
   case − control.
-- **`batch_col`** must be the biological replicate (donor/patient/sample) that scCST matches
+- **`batch_col`** must be the biological replicate that scCST matches
   across conditions.
+- **`Sample`**. An optional pairing identifier denoting the same biological source measured in **both** conditions (paired / repeated-measures designs).
+  When provided (sample), control–disease neighborhood matching is restricted to pairs from the **same sample** (strict paired matching);
+  when omitted, matching is unpaired and performed by latent-space proximity across replicates. In the Kang data, **`sample`** = patient (present in both control and stimulated conditions).
 - **No latent embedding / raw counts?** Compute `sc.pp.normalize_total` + `sc.pp.log1p`, then
   `sc.pp.pca` (and, if there are batch effects, a batch-integrated embedding such as Harmony
   into `X_pca_harmony`), and point `latent_key` at it.
