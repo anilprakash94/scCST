@@ -157,11 +157,6 @@ python scripts/run_downstream.py --input sccst_result.h5ad --output sccst_annota
   `sc.pp.pca` (and, if there are batch effects, a batch-integrated embedding such as Harmony
   into `X_pca_harmony`), and point `latent_key` at it.
 
-## Examples
-
-Worked, end-to-end notebooks on the Kang IFN-β PBMC data are in [`examples/`](examples/):
-`kang_ifnb_run_sccst.ipynb` (Steps 1–2) and `kang_ifnb_downstream_analysis.ipynb`
-(downstream).
 
 ## Citation
 
