@@ -153,8 +153,7 @@ python scripts/run_downstream.py --input sccst_result.h5ad --output sccst_annota
 - **`Sample`**. An optional pairing identifier denoting the same biological source measured in **both** conditions (paired / repeated-measures designs).
   When provided (sample), control–disease neighborhood matching is restricted to pairs from the **same sample** (strict paired matching);
   when omitted, matching is unpaired and performed by latent-space proximity across replicates. In the Kang data, **`sample`** = patient (present in both control and stimulated conditions).
-- **No latent embedding / raw counts?** Compute `sc.pp.normalize_total` + `sc.pp.log1p`, then
-  `sc.pp.pca` (and, if there are batch effects, a batch-integrated embedding such as Harmony
+- **No latent embedding / raw counts?** Compute `sc.pp.normalize_total` + `sc.pp.log1p`, (and, if there are batch effects, a batch-integrated embedding such as Harmony
   into `X_pca_harmony`), and point `latent_key` at it.
 
 
