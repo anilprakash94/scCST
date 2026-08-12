@@ -22,7 +22,7 @@ scCST operates on an `AnnData` object with:
 
 - **log-normalised** expression in `adata.X`
 - a **latent embedding** in `adata.obsm[latent_key]` (e.g. `X_pca`, or a batch-integrated
-  `X_pca_harmony`)
+  `X_pca_harmony` — for paired designs, correct on the condition, not the donor; see Notes)
 - three `adata.obs` columns: **condition**, **biological batch/replicate** (donor/patient),
   and **cell type/leiden cluster**
 
@@ -150,9 +150,16 @@ python scripts/run_downstream.py --input sccst_result.h5ad --output sccst_annota
   case − control.
 - **`batch_col`** must be the biological replicate that scCST matches
   across conditions.
-- **`Sample`**. An optional pairing identifier denoting the same biological source measured in **both** conditions (paired / repeated-measures designs).
+- **`sample`**. An optional pairing identifier denoting the same biological source measured in **both** conditions (paired / repeated-measures designs).
   When provided (sample), control–disease neighborhood matching is restricted to pairs from the **same sample** (strict paired matching);
   when omitted, matching is unpaired and performed by latent-space proximity across replicates. In the Kang data, **`sample`** = patient (present in both control and stimulated conditions).
+- **Paired designs — what to batch-correct on.** When the same donor contributes cells to
+  **both** conditions, run Harmony on the **condition** (equivalently, on the donor×condition
+  sample) rather than on the donor: donor-level correction aligns donors but leaves the
+  case–control offset in the embedding fully intact, so case and control cells never share
+  local neighborhoods and no matched pairs can be formed. This does not remove the signal
+  being tested — the embedding only defines which cells are in comparable states, while all
+  gene scores are computed from the uncorrected log-normalised `adata.X`.
 - **No latent embedding / raw counts?** Compute `sc.pp.normalize_total` + `sc.pp.log1p`, (and, if there are batch effects, a batch-integrated embedding such as Harmony
   into `X_pca_harmony`), and point `latent_key` at it.
 
