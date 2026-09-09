@@ -5,7 +5,8 @@ from .downstream import (
     plot_one_cell_type_specific_marker_gene_scores,
     plot_single_celltype_lollipop,
     plot_go_enrichment,
-    visualize_gene_stir,
+    visualize_gene_map,
+    visualize_gene_stir,  # deprecated alias
 )
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "plot_one_cell_type_specific_marker_gene_scores",
     "plot_single_celltype_lollipop",
     "plot_go_enrichment",
+    "visualize_gene_map",
     "visualize_gene_stir",
 ]

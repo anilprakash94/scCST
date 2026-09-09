@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sccst"
-version = "0.1.0"
+version = "1.1.0"
 description = "single-cell Cell State Transition: local replicate-aware case-control scRNA-seq analysis"
 readme = "README.md"
 requires-python = ">=3.9"

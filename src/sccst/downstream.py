@@ -231,13 +231,18 @@ def plot_cell_type_specific_gene_score_markers(
     top_k=10,
     min_cells=10,
     clip=None,
-    vmin=-5,
-    vmax=5,
+    vmin=None,
+    vmax=None,
     cmap="RdBu_r",
     figsize=None,
     save_path=None,
     is_dendrogram=True,
     plot_cell_types=None,
+    kind="dot",
+    color_stat="responders",
+    color_percentile=95,
+    dot_max_size=260,
+    return_stats=False,
 ):
     """
     Plot cell-type-specific gene-score markers.
@@ -254,6 +259,45 @@ def plot_cell_type_specific_gene_score_markers(
 
     If plot_cell_types is provided, only those cell types are shown in the plot,
     but marker selection is still performed using all eligible cell types.
+
+    Rendering
+    ---------
+    kind : {"dot", "matrix"}, default "dot"
+        ``"dot"``  - dot SIZE is the fraction of cells in the group carrying a
+        non-zero (significant) score for that gene, and dot COLOUR is the score
+        strength. ``"matrix"`` reproduces the original mean-score heatmap.
+
+        The dot plot is the default because a mean heatmap is a poor summary of
+        this layer: ``rra_gene_score`` is a *sparse* per-cell statistic (a gene is
+        scored only where it clears significance in that individual cell), so
+        typically ~99% of entries are exactly zero. Averaging over those zeros
+        multiplies "how many cells respond" by "how strongly they respond" and
+        buries both. Splitting them into size and colour keeps them separable.
+
+    color_stat : {"responders", "all"}, default "responders"
+        ``"responders"`` colours by the mean over cells with a non-zero score;
+        ``"all"`` colours by the mean over every cell (the old behaviour).
+
+    vmin, vmax : float or None, default None
+        ``None`` derives symmetric limits from the data, using
+        ``color_percentile`` of the absolute plotted values. The former defaults
+        of ``-5``/``+5`` are far wider than this layer's range and render the
+        whole plot near-white; pass numbers explicitly to override.
+
+    color_percentile : float, default 95
+        Percentile of |plotted value| used for the automatic limits. Values above
+        it saturate, so the bulk of the data gets the full colour range.
+
+    dot_max_size : float, default 260
+        Marker area for a group where 100% of cells carry a score.
+
+    return_stats : bool, default False
+        If True, also return a dict with the ``frac_responding`` and ``color``
+        matrices that were plotted.
+
+    Returns
+    -------
+    (marker_dict, marker_score_df) or (marker_dict, marker_score_df, stats)
     """
 
     print(f"--- Finding and plotting cell-type-specific markers from `{layer}` ---")
@@ -381,8 +425,8 @@ def plot_cell_type_specific_gene_score_markers(
 
     # Precompute the dendrogram with a dimension-safe PCA. scanpy's default dendrogram
     # PCA uses n_comps=50, which errors when there are few marker genes or cell types.
-    use_dendro = is_dendrogram
-    if is_dendrogram:
+    use_dendro = is_dendrogram and kind == "matrix"
+    if use_dendro:
         try:
             npc = max(2, min(50, ad_plot.n_vars - 1, ad_plot.n_obs - 1))
             sc.pp.pca(ad_plot, n_comps=npc)
@@ -390,31 +434,198 @@ def plot_cell_type_specific_gene_score_markers(
         except Exception:
             use_dendro = False
 
+    if kind not in ("dot", "matrix"):
+        raise ValueError("kind must be 'dot' or 'matrix'.")
+
+    if color_stat not in ("responders", "all"):
+        raise ValueError("color_stat must be 'responders' or 'all'.")
+
+    # ------------------------------------------------------------------
+    # Per-group summaries of the plotted markers.
+    # frac_responding : share of cells with a non-zero (significant) score
+    # color_matrix    : score strength (see color_stat)
+    # ------------------------------------------------------------------
+    group_values = ad_plot.obs[cell_type_col].astype(str).values
+
+    plot_order = [
+        str(ct)
+        for ct in (plot_cell_types if plot_cell_types is not None else categories)
+        if str(ct) in set(group_values)
+    ]
+
+    X_plot = np.asarray(ad_plot.X, dtype=np.float32)
+
+    n_groups = len(plot_order)
+    n_markers = len(all_markers)
+
+    frac_responding = np.zeros((n_groups, n_markers), dtype=np.float32)
+    color_matrix = np.zeros((n_groups, n_markers), dtype=np.float32)
+
+    for i, ct in enumerate(plot_order):
+        rows = X_plot[group_values == str(ct)]
+
+        if rows.shape[0] == 0:
+            continue
+
+        nz = rows != 0
+        frac_responding[i] = nz.mean(axis=0)
+
+        if color_stat == "responders":
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                masked = np.where(nz, rows, np.nan)
+                color_matrix[i] = np.nan_to_num(np.nanmean(masked, axis=0))
+        else:
+            color_matrix[i] = rows.mean(axis=0)
+
+    stats = {
+        "frac_responding": pd.DataFrame(
+            frac_responding, index=plot_order, columns=all_markers
+        ),
+        "color": pd.DataFrame(
+            color_matrix, index=plot_order, columns=all_markers
+        ),
+    }
+
+    # Symmetric limits from the data unless the caller pinned them.
+    if vmin is None or vmax is None:
+        basis = color_matrix if kind == "dot" else np.asarray(
+            [
+                X_plot[group_values == str(ct)].mean(axis=0)
+                for ct in plot_order
+            ],
+            dtype=np.float32,
+        )
+        nonzero = np.abs(basis[basis != 0])
+        lim = float(np.percentile(nonzero, color_percentile)) if nonzero.size else 1.0
+        lim = max(lim, 1e-6)
+        vmin = -lim if vmin is None else vmin
+        vmax = lim if vmax is None else vmax
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
 
-        if figsize is not None:
-            plt.figure(figsize=figsize)
+        if kind == "matrix":
+            if figsize is not None:
+                plt.figure(figsize=figsize)
 
-        sc.pl.matrixplot(
-            ad_plot,
-            var_names=marker_dict_plot,
-            groupby=cell_type_col,
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            dendrogram=use_dendro,
-            colorbar_title="Mean gene score",
-            title="",
-            show=False,
-        )
+            sc.pl.matrixplot(
+                ad_plot,
+                var_names=marker_dict_plot,
+                groupby=cell_type_col,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                dendrogram=use_dendro,
+                colorbar_title="Mean gene score",
+                title="",
+                show=False,
+            )
 
-        plt.tight_layout()
+            plt.tight_layout()
+
+        else:
+            from matplotlib.lines import Line2D
+
+            if figsize is None:
+                figsize = (max(10.0, 0.40 * n_markers), 2.2 + 0.42 * n_groups)
+
+            fig, ax = plt.subplots(figsize=figsize)
+
+            xx, yy = np.meshgrid(np.arange(n_markers), np.arange(n_groups))
+
+            pts = ax.scatter(
+                xx.ravel(),
+                yy.ravel(),
+                s=frac_responding.ravel() * dot_max_size,
+                c=color_matrix.ravel(),
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                edgecolors="#555555",
+                linewidths=0.4,
+            )
+
+            ax.set_xticks(range(n_markers))
+            ax.set_xticklabels(all_markers, rotation=90, fontsize=7)
+            ax.set_yticks(range(n_groups))
+            ax.set_yticklabels(plot_order, fontsize=9)
+            ax.set_xlim(-0.7, n_markers - 0.3)
+            ax.set_ylim(-0.7, n_groups - 0.3)
+            ax.invert_yaxis()
+            ax.set_axisbelow(True)
+            ax.grid(alpha=0.15, lw=0.5)
+
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+
+            # Bracket each cell type over the gene block selected for it.
+            # all_markers is de-duplicated, so recompute the blocks the same way.
+            seen = set()
+            pos = 0
+
+            for ct, ct_genes in marker_dict_plot.items():
+                block = [g for g in ct_genes if g not in seen]
+                seen.update(block)
+
+                if not block:
+                    continue
+
+                ax.plot(
+                    [pos - 0.4, pos + len(block) - 0.6],
+                    [-0.62, -0.62],
+                    lw=1.1,
+                    color="k",
+                    clip_on=False,
+                )
+                ax.text(
+                    pos + (len(block) - 1) / 2.0,
+                    -0.78,
+                    str(ct),
+                    ha="center",
+                    va="bottom",
+                    fontsize=7.5,
+                    clip_on=False,
+                )
+                pos += len(block)
+
+            cbar = fig.colorbar(pts, ax=ax, shrink=0.7, pad=0.015)
+            cbar.set_label(
+                "Mean gene score among responding cells"
+                if color_stat == "responders"
+                else "Mean gene score",
+                fontsize=8,
+            )
+
+            handles = [
+                Line2D(
+                    [], [],
+                    marker="o", ls="",
+                    mfc="lightgrey", mec="#555555",
+                    ms=float(np.sqrt(f * dot_max_size)),
+                )
+                for f in (0.05, 0.25, 0.50, 0.90)
+            ]
+            ax.legend(
+                handles,
+                ["5%", "25%", "50%", "90%"],
+                title="% of cells\nwith a score",
+                frameon=False,
+                fontsize=7,
+                title_fontsize=7,
+                loc="center left",
+                bbox_to_anchor=(1.10, 0.5),
+            )
+
+            fig.tight_layout()
 
         if save_path is not None:
             plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
         plt.close()
+
+    if return_stats:
+        return marker_dict, marker_score_df, stats
 
     return marker_dict, marker_score_df
 
@@ -700,6 +911,46 @@ import warnings
 import os
 import time  # Added for retry delay
 
+
+def select_up_marker_genes(gene_names, mean_target, mean_rest, n_genes=50):
+    """
+    Picks the top up-regulated marker genes for one cell type.
+
+    A gene qualifies only when BOTH of these hold:
+
+    * ``mean_target > 0`` - the gene is up-regulated in this cell type in its
+      own right. Ranking on the target-minus-rest difference alone lets through
+      a gene that is merely *less* down-regulated here than elsewhere (say
+      mean_target = -0.1 against mean_rest = -2.0, a difference of +1.9), which
+      is not an up-regulated marker at all.
+    * ``mean_target - mean_rest > 0`` - the gene is enriched here relative to
+      the other cell types, so it is specific rather than ubiquitous. Without
+      this, a cell type whose genes all score below the rest still contributes
+      its "least bad" genes.
+
+    Sending genes that fail either test to GO enrichment as up-regulated
+    markers produces wrong biology.
+
+    Returns
+    -------
+    A list of at most ``n_genes`` gene names, largest difference first. Empty
+    when no gene qualifies.
+    """
+    gene_names = np.asarray(gene_names)
+    mean_target = np.asarray(mean_target, dtype=float)
+    mean_rest = np.asarray(mean_rest, dtype=float)
+
+    diff_score = mean_target - mean_rest
+    keep = (mean_target > 0) & (diff_score > 0)
+    if not np.any(keep):
+        return []
+
+    kept_names = gene_names[keep]
+    kept_scores = diff_score[keep]
+    order = np.argsort(-kept_scores, kind="stable")
+    return kept_names[order][: int(n_genes)].tolist()
+
+
 def run_go_celltype(
     adata, 
     cell_type_col='Cell_Type', 
@@ -749,13 +1000,22 @@ def run_go_celltype(
             mean_target = np.nan_to_num(np.nanmean(score_target[:, valid_gene_mask], axis=0), nan=0.0)
             mean_rest = np.nan_to_num(np.nanmean(score_rest[:, valid_gene_mask], axis=0), nan=0.0)
         
-        diff_score = mean_target - mean_rest
-        valid_genes_names = genes[valid_gene_mask]
-        
-        df_diff = pd.DataFrame({'gene': valid_genes_names, 'score': diff_score})
-        
-        # Select only top N genes with the highest positive scores
-        up_genes = df_diff.sort_values('score', ascending=False).head(n_genes)['gene'].tolist()
+        # Genuinely up-regulated markers only: positive in this cell type
+        # (mean_target > 0) AND enriched over the other cell types
+        # (mean_target - mean_rest > 0). See select_up_marker_genes.
+        up_genes = select_up_marker_genes(
+            gene_names=genes[valid_gene_mask],
+            mean_target=mean_target,
+            mean_rest=mean_rest,
+            n_genes=n_genes,
+        )
+
+        if len(up_genes) < 10:
+            print(
+                f"  Skipping {ct}: only {len(up_genes)} gene(s) are both "
+                f"up-regulated here (mean_target > 0) and enriched over the rest "
+                f"(score > 0); 10 are needed for enrichment."
+            )
 
         # 4. Enrichment Helper with Retry Mechanism
         if len(up_genes) >= 10:
@@ -989,18 +1249,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.sparse import issparse
 
-def visualize_gene_stir(
+def visualize_gene_map(
     adata, 
     gene_name: str, 
     condition_col: str = 'condition', 
-    layer: str = None,  # None for Expression (.X), 'stir_z_scores_signed' for Z-scores
+    layer: str = None,  # None for Expression (.X), 'rra_gene_score' for gene scores
     save_path: str = None,
     figsize=None,
+    vmin=None,
+    vmax=None,
+    score_percentile: float = 99.0,
 ):
     """
     Intelligent plotter:
     - If layer is None (Expression): Plots 2 side-by-side UMAPs (Condition A vs Condition B).
     - If layer is 'gene score': Plots 1 single UMAP (Disease Relevance Map).
+
+    vmin, vmax : float or None
+        Explicit colour limits. When None they are derived from the data.
+        For the gene-score mode the limit is a high percentile of the NON-ZERO
+        magnitudes rather than the maximum: ``rra_gene_score`` is a sparse
+        per-cell statistic (typically ~99% exact zeros, median non-zero
+        magnitude well under 1), so scaling to the single most extreme cell
+        renders almost every responding cell near-white.
+    score_percentile : float, default 99
+        Percentile of |non-zero score| used for the automatic symmetric limit.
     """
     
     # 1. Validation
@@ -1022,20 +1295,32 @@ def visualize_gene_stir(
     if layer != None:
         print(f"Plotting Gene Score Map for '{gene_name}'...")
         
-        # Centered scaling for Z-scores (e.g., -3 to +3)
-        max_val = np.nanmax(np.abs(data_vec))
-        # Cap visual noise at 5.0 usually
-        limit = min(max_val, 5.0) 
-        
+        # Symmetric limit taken from the non-zero magnitudes, not the maximum.
+        finite = data_vec[np.isfinite(data_vec)]
+        nonzero = np.abs(finite[finite != 0])
+
+        if nonzero.size:
+            limit = float(np.percentile(nonzero, score_percentile))
+        else:
+            limit = 1.0
+
+        limit = max(limit, 1e-6)
+
+        lo = -limit if vmin is None else vmin
+        hi = limit if vmax is None else vmax
+
+        print(f"  colour limits: [{lo:.2f}, {hi:.2f}]  "
+              f"({(finite != 0).mean() * 100:.1f}% of cells carry a score)")
+
         plt.figure(figsize=figsize if figsize is not None else (7, 6))
-        
+
         sc.pl.umap(
             adata,
             color=gene_name,
             layer=layer,
             cmap='RdBu_r',       # Red = High Disease, Blue = High Control
-            vmin=-limit,
-            vmax=limit,
+            vmin=lo,
+            vmax=hi,
             title=f"{gene_name}\n(Gene Importance Score)",
             frameon=False,
             show=False
@@ -1052,9 +1337,9 @@ def visualize_gene_stir(
             
         print(f"Plotting Expression Split for '{gene_name}' ({conditions[0]} vs {conditions[1]})...")
         
-        # 0 to Max scaling for expression
-        vmax = np.nanmax(data_vec)
-        vmin = np.nanmin(data_vec)
+        # 0 to Max scaling for expression (shared across both panels)
+        vmax = np.nanmax(data_vec) if vmax is None else vmax
+        vmin = np.nanmin(data_vec) if vmin is None else vmin
         
         fig, axes = plt.subplots(1, 2, figsize=figsize if figsize is not None else (12, 5.5))
         
@@ -1081,3 +1366,19 @@ def visualize_gene_stir(
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
+
+
+def visualize_gene_stir(*args, **kwargs):
+    """Deprecated alias for :func:`visualize_gene_map`.
+
+    The "stir" name came from an earlier prototype and does not describe what
+    the function does. Use ``visualize_gene_map`` instead; this wrapper will be
+    removed in a future release.
+    """
+    warnings.warn(
+        "'visualize_gene_stir' is deprecated and will be removed in a future "
+        "release. Use 'visualize_gene_map' instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return visualize_gene_map(*args, **kwargs)

@@ -14,6 +14,7 @@ Main behavior
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, Optional, Tuple, Union, List
 
 import numpy as np
@@ -356,7 +357,7 @@ def process_focal_cell_rra(
     batch_sample_map: Union[Dict[int, Any], None] = None,
     celltype_calipers: Union[Dict[int, float], None] = None,
     min_cells_per_batch_neighborhood: int = 3,
-    min_matched_pairs: int = 3,
+    min_matched_pairs: int = 2,
     top_genes_per_list: Optional[int] = 100,
     fdr_threshold: float = 0.05,
 ) -> Union[Dict[int, Dict[str, Any]], None]:
@@ -590,6 +591,68 @@ def process_focal_cell_rra(
 
 
 # =============================================================================
+# Input sanity checks
+# =============================================================================
+
+DEFAULT_NEIGHBORHOOD_SIZE = 20
+
+
+def check_log_normalized(
+    X: Any,
+    max_expected: float = 15.0,
+    n_sample_cells: int = 1000,
+) -> Optional[str]:
+    """
+    Cheap heuristic test that an expression matrix looks log-normalised.
+
+    scCST compares mean expression between matched neighborhoods, which assumes
+    ``adata.X`` holds log-normalised values (``sc.pp.normalize_total`` followed
+    by ``sc.pp.log1p``). Raw counts run without raising, but the resulting gene
+    scores are meaningless, so the mistake is otherwise silent.
+
+    The check reads at most ``n_sample_cells`` evenly spaced rows and looks at
+    the largest value. Log-normalised data very rarely exceeds ~15, whereas raw
+    counts reach the hundreds or thousands and are whole numbers.
+
+    Returns
+    -------
+    None if the matrix looks log-normalised, otherwise a short message naming
+    what was detected.
+    """
+    try:
+        n_obs = int(X.shape[0])
+        if n_obs == 0:
+            return None
+
+        step = max(1, n_obs // int(n_sample_cells)) if n_obs > int(n_sample_cells) else 1
+        sub = X[::step, :]
+
+        values = sub.data if issparse(sub) else np.asarray(sub).ravel()
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
+        if values.size == 0:
+            return None
+
+        max_value = float(values.max())
+    except Exception:  # pragma: no cover - a heuristic must never block a run
+        return None
+
+    if max_value <= float(max_expected):
+        return None
+
+    if bool(np.all(values == np.rint(values))):
+        return (
+            f"adata.X looks like RAW COUNTS: the sampled values are whole "
+            f"numbers and reach {max_value:.1f}"
+        )
+
+    return (
+        f"adata.X does not look log-transformed: the sampled values reach "
+        f"{max_value:.1f}"
+    )
+
+
+# =============================================================================
 # Main driver
 # =============================================================================
 
@@ -599,18 +662,19 @@ def process_cell_type(
     condition_col: str = "condition",
     batch_col: str = "batch",
     sample_col: Union[str, None] = None,
-    n_neighborhoods: int = 20,
+    neighborhood_size: Optional[int] = None,
     cell_type_col: str = "Cell_Type",
     n_jobs: int = 4,
     latent_key: str = "X_pca_harmony",
     caliper_percentile: float = 75.0,
     min_cells_per_batch_neighborhood: int = 3,
-    min_matched_pairs: int = 3,
+    min_matched_pairs: int = 2,
     top_genes_per_list: Optional[int] = 100,
     fdr_threshold: float = 0.05,
     n_anchors_per_celltype: Optional[Union[int, Dict[Union[int, str], int]]] = None,
     anchor_indices: Optional[np.ndarray] = None,
     anchor_random_state: int = 0,
+    n_neighborhoods: Optional[int] = None,
 ) -> Tuple[Dict[str, Dict[str, Any]], np.ndarray, Dict[str, Any]]:
     """
     Main processing function.
@@ -648,6 +712,20 @@ def process_cell_type(
         If provided, strict paired design is enforced:
             each sample must contain exactly one control batch and one disease batch.
 
+    neighborhood_size:
+        Number of nearest neighbours (k) used to build each batch-specific local
+        neighborhood. Defaults to 20.
+
+        Formerly named ``n_neighborhoods``, which was misleading: the value sets
+        how large each neighborhood is, not how many are built. The old name is
+        still accepted but raises a DeprecationWarning.
+
+    min_matched_pairs:
+        Minimum number of matched control/disease replicate pairs a focal cell
+        needs before it is scored; cells below it return no result. Defaults to
+        2, so designs with only two replicates per condition (drug-perturbation
+        experiments, for example) are supported.
+
     top_genes_per_list:
         Number of top genes retained in each pair-level partial ranked list.
         If None, all genes are used subject to directional sign.
@@ -678,7 +756,32 @@ def process_cell_type(
     """
 
     # ---------------------------------------------------------------------
-    # STEP 0: BASIC VALIDATION
+    # STEP 0: RESOLVE DEPRECATED ARGUMENT NAMES
+    # ---------------------------------------------------------------------
+    if n_neighborhoods is not None:
+        if neighborhood_size is not None:
+            raise ValueError(
+                "Pass only one of 'neighborhood_size' or the deprecated "
+                "'n_neighborhoods'."
+            )
+        warnings.warn(
+            "'n_neighborhoods' is deprecated and will be removed in a future "
+            "release. The value is the size of each local neighborhood, not a "
+            "count of neighborhoods, so use 'neighborhood_size' instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        neighborhood_size = n_neighborhoods
+
+    if neighborhood_size is None:
+        neighborhood_size = DEFAULT_NEIGHBORHOOD_SIZE
+
+    neighborhood_size = int(neighborhood_size)
+    if neighborhood_size < 1:
+        raise ValueError("neighborhood_size must be a positive integer.")
+
+    # ---------------------------------------------------------------------
+    # STEP 1: BASIC VALIDATION
     # ---------------------------------------------------------------------
     if latent_key not in adata.obsm:
         raise ValueError(f"Latent key '{latent_key}' not found in adata.obsm.")
@@ -695,11 +798,24 @@ def process_cell_type(
     if top_genes_per_list is not None and int(top_genes_per_list) < 1:
         raise ValueError("top_genes_per_list must be None or a positive integer.")
 
+    lognorm_problem = check_log_normalized(adata.X)
+    if lognorm_problem is not None:
+        warnings.warn(
+            f"{lognorm_problem}. scCST expects log-normalised expression in "
+            "adata.X (sc.pp.normalize_total followed by sc.pp.log1p). Gene "
+            "scores computed from raw or un-logged counts are not meaningful. "
+            "Continuing anyway.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # ---------------------------------------------------------------------
-    # STEP 1: GENE FILTERING
+    # STEP 2: GENE FILTERING
     # ---------------------------------------------------------------------
     min_cells = int(adata.n_obs * 0.005)
-    min_cells = max(min_cells, 3)
+    # Cap rather than floor. On a large dataset 0.5% of all cells is a harsh
+    # threshold that discards genes expressed only in a rare cell type.
+    min_cells = min(min_cells, 50)
 
     # Modifies adata in place. Use adata.copy() before calling if needed.
     sc.pp.filter_genes(adata, min_cells=min_cells)
@@ -711,7 +827,7 @@ def process_cell_type(
     print(f"Using {caliper_percentile}th percentile cell-type-specific caliper.")
 
     # ---------------------------------------------------------------------
-    # STEP 2: PREPARE MATRICES
+    # STEP 3: PREPARE MATRICES
     # ---------------------------------------------------------------------
     latent_matrix = adata.obsm[latent_key]
 
@@ -727,7 +843,7 @@ def process_cell_type(
         input_X = adata.X.copy()
 
     # ---------------------------------------------------------------------
-    # STEP 3: ENCODE CELL TYPES
+    # STEP 4: ENCODE CELL TYPES
     # ---------------------------------------------------------------------
     unique_ctypes = adata.obs[cell_type_col].unique()
     ctype_map = {ct: i for i, ct in enumerate(unique_ctypes)}
@@ -735,7 +851,7 @@ def process_cell_type(
     y_ctypes = adata.obs[cell_type_col].map(ctype_map).to_numpy()
 
     # ---------------------------------------------------------------------
-    # STEP 4: ENCODE CONDITIONS
+    # STEP 5: ENCODE CONDITIONS
     # ---------------------------------------------------------------------
     disease_label, control_label = conditions
 
@@ -756,7 +872,7 @@ def process_cell_type(
     y_conditions = adata.obs[condition_col].map(y_map).to_numpy()
 
     # ---------------------------------------------------------------------
-    # STEP 5: ENCODE BATCHES
+    # STEP 6: ENCODE BATCHES
     # ---------------------------------------------------------------------
     unique_batches = adata.obs[batch_col].unique()
     batch_map = {b: i for i, b in enumerate(unique_batches)}
@@ -779,7 +895,7 @@ def process_cell_type(
         batch_conditions_map[b_id] = int(conds_in_batch[0])
 
     # ---------------------------------------------------------------------
-    # STEP 6: OPTIONAL STRICT SAMPLE-PAIRED DESIGN
+    # STEP 7: OPTIONAL STRICT SAMPLE-PAIRED DESIGN
     # ---------------------------------------------------------------------
     batch_sample_map = None
 
@@ -860,14 +976,14 @@ def process_cell_type(
         )
 
     # ---------------------------------------------------------------------
-    # STEP 7: COMPUTE CELL-TYPE-SPECIFIC CALIPERS
+    # STEP 8: COMPUTE CELL-TYPE-SPECIFIC CALIPERS
     # ---------------------------------------------------------------------
     celltype_calipers = compute_celltype_local_calipers(
         latent_matrix=latent_matrix,
         y_ctypes=y_ctypes,
-        k_ref=n_neighborhoods,
+        k_ref=neighborhood_size,
         percentile=caliper_percentile,
-        min_cells=max(30, n_neighborhoods + 1),
+        min_cells=max(30, neighborhood_size + 1),
     )
 
     if len(celltype_calipers) == 0:
@@ -881,7 +997,7 @@ def process_cell_type(
         print(f"  {reverse_ctype_map[ctype_id]}: {caliper:.4f}")
 
     # ---------------------------------------------------------------------
-    # STEP 8: CHOOSE ALL-CELL MODE OR ANCHOR MODE
+    # STEP 9: CHOOSE ALL-CELL MODE OR ANCHOR MODE
     # ---------------------------------------------------------------------
     anchor_mode = anchor_indices is not None or n_anchors_per_celltype is not None
 
@@ -893,7 +1009,7 @@ def process_cell_type(
                 n_anchors_per_celltype=n_anchors_per_celltype,  # type: ignore[arg-type]
                 ctype_map=ctype_map,
                 random_state=anchor_random_state,
-                min_cells_per_celltype=max(30, n_neighborhoods + 1),
+                min_cells_per_celltype=max(30, neighborhood_size + 1),
             )
         else:
             anchor_indices = np.asarray(anchor_indices, dtype=int)
@@ -921,7 +1037,7 @@ def process_cell_type(
         print(f"Running focal-cell RRA over range(adata.n_obs) = {adata.n_obs} cells.")
 
     # ---------------------------------------------------------------------
-    # STEP 9: RUN FOCAL-CELL / ANCHOR RRA
+    # STEP 10: RUN FOCAL-CELL / ANCHOR RRA
     # ---------------------------------------------------------------------
     print("Starting parallel focal-cell partial-list RRA...")
 
@@ -933,7 +1049,7 @@ def process_cell_type(
             y_ctypes=y_ctypes,
             y_batches=y_batches,
             latent_matrix=latent_matrix,
-            k=n_neighborhoods,
+            k=neighborhood_size,
             batch_conditions_map=batch_conditions_map,
             batch_sample_map=batch_sample_map,
             celltype_calipers=celltype_calipers,
@@ -946,7 +1062,7 @@ def process_cell_type(
     )
 
     # ---------------------------------------------------------------------
-    # STEP 10: COLLECT RESULTS
+    # STEP 11: COLLECT RESULTS
     # ---------------------------------------------------------------------
     cell_importances: Dict[str, Dict[str, Any]] = {}
     focal_ids = adata.obs.index
@@ -1029,12 +1145,12 @@ def add_rra_results_to_adata(
         return f"{prefix}_{key}" if prefix else key
 
     gene_matrices = {
-        key: np.full((n_cells, n_genes), np.nan, dtype=np.float32)
+        key: np.full((n_cells, n_genes), np.nan, dtype=np.float64)
         for key in gene_level_keys
     }
 
     obs_arrays = {
-        key: np.full(n_cells, np.nan, dtype=np.float32)
+        key: np.full(n_cells, np.nan, dtype=np.float64)
         for key in obs_level_keys
     }
 
@@ -1057,7 +1173,7 @@ def add_rra_results_to_adata(
                     f"Result key '{key}' for '{cell_id}' has shape {value.shape}; "
                     f"expected ({n_genes},)."
                 )
-            gene_matrices[key][idx, :] = value.astype(np.float32)
+            gene_matrices[key][idx, :] = value.astype(np.float64, copy=False)
 
         for key in obs_level_keys:
             if key not in metrics:

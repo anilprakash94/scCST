@@ -50,7 +50,7 @@ cell_importances, gene_names, run_info = process_cell_type(
     sample_col="sample",           # optional: same source in both conditions -> paired matching (None = unpaired)
     cell_type_col="cell_type",     # cell-type labels
     latent_key="X_pca",            # obsm embedding key
-    n_neighborhoods=50,
+    neighborhood_size=50,          # nearest neighbours (k) per local neighborhood
     n_jobs=8,
     # n_anchors_per_celltype=100,  # anchor mode for large datasets (see Notes)
 )
@@ -87,7 +87,7 @@ takes `save_path=` (writes a file) and `figsize=`. (Clustering and GO enrichment
 from sccst.downstream import (
     analyze_global_drivers, plot_ordered_violin, cluster_on_gene_scores,
     plot_cell_type_specific_gene_score_markers, plot_single_celltype_lollipop,
-    visualize_gene_stir, run_go_celltype, plot_go_enrichment,
+    visualize_gene_map, run_go_celltype, plot_go_enrichment,
 )
 
 # 1. Genes shifting most across the whole dataset (bar plot + table)
@@ -100,7 +100,8 @@ plot_ordered_violin(result, "rra_cell_divergence_score", "cell_type",
 # 3. Cluster cells by their gene-score profile (adds leiden_gene_score_* to obs)
 result = cluster_on_gene_scores(result, n_top_genes=2000, resolutions=[0.5, 1.0])
 
-# 4. Cell-type-specific marker genes (mean-gene-score matrix plot)
+# 4. Cell-type-specific marker genes (dot plot: size = % of cells scored,
+#    colour = score strength; pass kind="matrix" for the old heatmap)
 plot_cell_type_specific_gene_score_markers(result, cell_type_col="cell_type",
                     top_k=10, save_path="celltype_markers.pdf")
 
@@ -109,7 +110,7 @@ plot_single_celltype_lollipop(result, "CD14+ Monocytes", cell_type_col="cell_typ
                     top_k=20, save_path="lollipop_CD14_Monocytes.pdf")
 
 # 6. Map one gene's disease-relevance across cells
-visualize_gene_stir(result, "ISG15", condition_col="label",
+visualize_gene_map(result, "ISG15", condition_col="label",
                     layer="rra_gene_score", save_path="ISG15_map.pdf")
 
 # 7. GO enrichment per cell type (needs sccst[downstream] + internet)
@@ -148,6 +149,22 @@ python scripts/run_downstream.py --input sccst_result.h5ad --output sccst_annota
   ~35 min this way). Results are then per-anchor rather than per-cell.
 - **Case order matters:** `conditions[0]` is the case/disease state; the gene score is
   case − control.
+- **Two-replicate designs.** `min_matched_pairs` defaults to **2**, so experiments with only
+  two biological replicates per condition (drug-perturbation panels, for example) are
+  supported. Raise it if you want a stricter requirement; a focal cell with fewer matched
+  pairs than this returns no result.
+- **Input check.** `adata.X` must hold log-normalised expression (`sc.pp.normalize_total`
+  followed by `sc.pp.log1p`). Step 1 samples the matrix and warns when the values look like
+  raw counts, or like normalised-but-un-logged data. It is a warning rather than an error, so
+  an unusual but valid matrix still runs — but do not ignore it: gene scores computed from raw
+  counts are meaningless.
+- **`visualize_gene_map` (renamed).** Formerly `visualize_gene_stir`. The old name
+  still works but raises a `DeprecationWarning`. Its colour limits are now taken from a
+  high percentile of the non-zero scores instead of a fixed ±5 cap, so responding cells
+  are visible; override with `vmin`/`vmax`/`score_percentile`.
+- **`neighborhood_size` (renamed).** Formerly `n_neighborhoods`. The value is the number of
+  nearest neighbours (k) forming each local neighborhood, not how many neighborhoods are
+  built. The old name still works but raises a `DeprecationWarning`.
 - **`batch_col`** must be the biological replicate that scCST matches
   across conditions.
 - **`sample`**. An optional pairing identifier denoting the same biological source measured in **both** conditions (paired / repeated-measures designs).

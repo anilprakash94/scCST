@@ -6,6 +6,7 @@ Reusable Python implementation extracted from the development notebooks.
 try:
     from .core import (
         apply_bh_fdr,
+        check_log_normalized,
         rra_bonferroni_pvalues,
         compute_celltype_local_calipers,
         select_evenly_spaced_anchors,
@@ -18,4 +19,4 @@ except Exception:  # pragma: no cover
     # Allows metadata inspection even when optional scientific dependencies are absent.
     pass
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"
